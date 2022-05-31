@@ -67,6 +67,20 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause()==13 || r_scause()==15) {
+    uint64 fault_va = r_stval();  // 产生页面错误的虚拟地址
+    char *mem;
+    if(fault_va<p->sz&&fault_va>PGROUNDUP(p->trapframe->sp)-1&&(mem = kalloc())!=0){
+      uint64 a;
+      memset(mem, 0, PGSIZE);
+      a=PGROUNDDOWN(r_stval());
+      if(mappages(p->pagetable, a, PGSIZE, (uint64)mem, PTE_X|PTE_W|PTE_R|PTE_U) != 0){
+          kfree(mem);
+          p->killed = 1;
+      }
+    }else{
+      p->killed = 1;
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
