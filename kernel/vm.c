@@ -311,7 +311,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -319,15 +318,14 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+    *pte=((*pte) & (~PTE_W) )| (PTE_RSW);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0)
       goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
-    }
+    // 增加内存的引用计数
+    kaddrefcount((char*)pa);
   }
+
   return 0;
 
  err:
@@ -359,6 +357,11 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
     pa0 = walkaddr(pagetable, va0);
+    // 处理COW页面的情况
+    if(iscow(pagetable, va0) == 0) {
+      // 更换目标物理地址
+      pa0 = (uint64)cowalloc(pagetable, va0);
+    }
     if(pa0 == 0)
       return -1;
     n = PGSIZE - (dstva - va0);
@@ -438,5 +441,54 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return 0;
   } else {
     return -1;
+  }
+}
+
+int
+iscow(pagetable_t pagetable,uint64 va)
+{
+  if(va>=MAXVA)
+    return -1;
+  pte_t *pte;
+  
+  if((pte = walk(pagetable, va, 0)) == 0)
+    return -1;
+  if((*pte & PTE_V) == 0)
+    return -1;
+  if((*pte & PTE_RSW)==0)
+    return -1;
+  return 0;
+}
+
+void *
+cowalloc(pagetable_t pagetable,uint64 va)
+{
+  if(va % PGSIZE != 0)
+    return 0;
+  pte_t *pte;
+  uint64 pa;
+  char *mem;
+  
+  if((pte = walk(pagetable, va, 0)) == 0)
+    panic("cowalloc: pte should exist");
+  pa = PTE2PA(*pte);
+  if(krefcount((char*)pa)==1){
+    *pte |= PTE_W;
+    *pte &= ~PTE_RSW;
+    return (void*)pa;
+  }else{
+    if((mem=kalloc())==0)
+      return 0;
+    memmove(mem,(char*)pa,PGSIZE);
+    // 清除PTE_V，否则在mappagges中会判定为remap
+    *pte &= ~PTE_V;
+    if(mappages(pagetable,va,PGSIZE,(uint64)mem,(PTE_FLAGS(*pte) | PTE_W) & (~PTE_RSW))!=0){
+      kfree(mem);
+      *pte |= PTE_V;
+      return 0;
+    }
+    // 将原来的物理内存引用计数减1
+    kfree((char*)PGROUNDDOWN(pa));
+    return mem;
   }
 }
