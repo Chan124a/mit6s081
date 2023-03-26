@@ -98,6 +98,7 @@ countfree()
 
 void test2() {
   int free0 = countfree();
+  printf("countfree OK\n");  
   int free1;
   int n = (PHYSTOP-KERNBASE)/PGSIZE;
   printf("start test2\n");  
